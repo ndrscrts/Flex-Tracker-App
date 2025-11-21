@@ -1,0 +1,863 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flex Tracker - App PWA</title>
+    <!-- Configuración para PWA en iOS -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Flex Tracker">
+    <!-- Enlace a Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Script de React y Babel para ejecutar JSX directamente en el navegador -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Imports de Firebase (usamos la versión modular) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, doc, setDoc, query, where, Timestamp, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // Estas variables se definen globalmente para que el código JSX/Babel las pueda acceder
+        window.firebase = { 
+            initializeApp, 
+            getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
+            getFirestore, collection, onSnapshot, doc, setDoc, query, where, Timestamp, deleteDoc
+        };
+
+        // Variables de entorno (asegúrate de que estas sean accesibles o maneja valores predeterminados)
+        window.__app_id = typeof __app_id !== 'undefined' ? __app_id : 'default-flex-tracker';
+        window.__firebase_config = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
+        window.__initial_auth_token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+    </script>
+    
+    <style>
+        /* Estilo base para el cuerpo */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #191970; /* Azul Medianoche */
+        }
+        /* Estilo para manejar el scroll en dispositivos móviles (necesario para la cuadrícula) */
+        .quarter-calendar-container {
+            -webkit-overflow-scrolling: touch;
+        }
+    </style>
+</head>
+<body>
+    <!-- Contenedor donde se montará la aplicación React -->
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // El código React/JSX de AttendanceTracker.jsx va aquí
+        const { useState, useEffect, useCallback, useMemo } = React;
+        const { initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } = window.firebase;
+        const { getFirestore, collection, onSnapshot, doc, setDoc, query, where, Timestamp, deleteDoc } = window.firebase;
+
+        // Definición de los trimestres personalizados
+        const QUARTERS = [
+            { id: 1, name: 'T1', months: [1, 2, 3] }, // Feb (1), Mar (2), Apr (3)
+            { id: 2, name: 'T2', months: [4, 5, 6] }, // May (4), Jun (5), Jul (6)
+            { id: 3, name: 'T3', months: [7, 8, 9] }, // Aug (7), Sep (8), Oct (9)
+            { id: 4, name: 'T4', months: [10, 11, 0] }, // Nov (10), Dec (11), Jan (0)
+        ];
+
+        // Helper para obtener detalles del trimestre actual
+        const getQuarterDetails = (date) => {
+            const month = date.getMonth(); // 0 (Jan) to 11 (Dec)
+            let year = date.getFullYear();
+
+            // Determinar el trimestre actual basado en el mes
+            let currentQuarter = QUARTERS.find(q => q.months.includes(month));
+
+            // Ajuste especial para el T4 (Nov, Dec, Jan)
+            if (month === 10 || month === 11) { // Nov or Dec
+                // The quarter starts in the current year
+                currentQuarter = QUARTERS.find(q => q.id === 4);
+            } else if (month === 0) { // Jan
+                // The quarter started in the previous year
+                currentQuarter = QUARTERS.find(q => q.id === 4);
+                year = year - 1; // Start year is previous year
+            }
+
+            if (!currentQuarter) {
+                // Default to Q1 if something is wrong
+                currentQuarter = QUARTERS.find(q => q.id === 1);
+            }
+
+            // Determine Start and End dates
+            let startMonth = currentQuarter.months[0];
+            let endMonth = currentQuarter.months[2];
+            let startYear = year;
+            let endYear = year;
+
+            // Adjust years for Q4
+            if (currentQuarter.id === 4) {
+                if (month === 0) { // Jan is current month
+                    startYear = year;
+                    endYear = year + 1;
+                } else { // Nov, Dec are current months
+                    startYear = year;
+                    endYear = year + 1;
+                }
+            }
+
+            const startDate = new Date(startYear, startMonth, 1);
+            const endDate = new Date(endYear, endMonth + 1, 0); // Last day of the end month
+
+            return {
+                id: currentQuarter.id,
+                name: currentQuarter.name,
+                startDate,
+                endDate,
+                startYear,
+                endYear
+            };
+        };
+
+        // Componente de Logo SVG con arco degradado
+        const FlexTrackerLogo = () => (
+            <svg 
+                className="w-8 h-8 mr-2" 
+                viewBox="0 0 100 100" 
+                xmlns="http://www.w3.org/2000/svg"
+            >
+                {/* Definición del degradado de Naranja a Amarillo */}
+                <defs>
+                    <linearGradient id="flexArcGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" style={{stopColor: 'rgb(249, 115, 22)', stopOpacity: 1}} /> {/* Naranja-500 */}
+                        <stop offset="100%" style={{stopColor: 'rgb(250, 204, 21)', stopOpacity: 1}} /> {/* Amarillo-400 */}
+                    </linearGradient>
+                </defs>
+
+                {/* Arco grande (exterior) */}
+                <path
+                    d="M 50 10 A 40 40 0 0 1 90 50 L 80 50 A 30 30 0 0 0 50 20 Z"
+                    fill="url(#flexArcGradient)"
+                    transform="rotate(-90 50 50)"
+                />
+                
+                {/* Arco pequeño (interior) - usando el mismo degradado */}
+                <path
+                    d="M 50 20 A 30 30 0 0 1 80 50 L 70 50 A 20 20 0 0 0 50 30 Z"
+                    fill="url(#flexArcGradient)"
+                    transform="rotate(0 50 50)"
+                />
+
+                {/* Pequeño círculo central para conectar (simulando un "punto") */}
+                <circle cx="50" cy="50" r="10" fill="white" />
+            </svg>
+        );
+
+
+        // Componente principal de la aplicación
+        const App = () => {
+            // Estado de la aplicación y Firebase
+            const [db, setDb] = useState(null);
+            const [userId, setUserId] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState('');
+
+            // Estado de Asistencia
+            const [attendance, setAttendance] = useState({}); // { 'YYYY-MM-DD': 'Attended' | 'Vacation' | 'Holiday' }
+            const [holidays, setHolidays] = useState([]); // Array de fechas YYYY-MM-DD
+            const [vacations, setVacations] = useState([]); // Array de fechas YYYY-MM-DD
+
+            // Obtener detalles del trimestre actual
+            const today = useMemo(() => new Date(), []);
+            // Para una comparación de fechas precisa (ignorando la hora)
+            const startOfToday = useMemo(() => {
+                const d = new Date(today);
+                d.setHours(0, 0, 0, 0);
+                return d;
+            }, [today]);
+            const quarterDetails = useMemo(() => getQuarterDetails(today), [today]);
+            
+            // Color base Azul Medianoche para usar en clases dinámicas y estilos en línea
+            const MIDNIGHT_BLUE = '#191970';
+            const MIDNIGHT_BLUE_LIGHTER = 'rgba(25,25,112,0.7)';
+            const MIDNIGHT_BLUE_DARKER = 'rgba(25,25,112,0.9)';
+
+
+            // --- Configuración de Firebase y Autenticación ---
+            useEffect(() => {
+                let unsubscribeAuth = () => {};
+
+                try {
+                    // Acceder a las variables globales definidas en el script type="module"
+                    const appId = window.__app_id || 'default-flex-tracker';
+                    const firebaseConfig = window.__firebase_config ? JSON.parse(window.__firebase_config) : null;
+                    const initialAuthToken = window.__initial_auth_token;
+
+                    if (!firebaseConfig) {
+                        setError("Error: Configuración de Firebase no encontrada.");
+                        setLoading(false);
+                        return;
+                    }
+
+                    const app = initializeApp(firebaseConfig);
+                    const firestoreDb = getFirestore(app);
+                    const firebaseAuth = getAuth(app);
+
+                    setDb(firestoreDb);
+
+                    unsubscribeAuth = onAuthStateChanged(firebaseAuth, async (user) => {
+                        if (user) {
+                            setUserId(user.uid);
+                        } else {
+                            try {
+                                const anonUserCredential = await signInAnonymously(firebaseAuth);
+                                setUserId(anonUserCredential.user.uid);
+                            } catch (authError) {
+                                console.error("Error en autenticación anónima:", authError);
+                                setError("Error de autenticación. No se pueden cargar los datos.");
+                            }
+                        }
+                        setLoading(false);
+                    });
+
+                    if (initialAuthToken) {
+                        signInWithCustomToken(firebaseAuth, initialAuthToken)
+                            .catch(e => console.error("Error al iniciar sesión con token personalizado:", e));
+                    }
+
+                } catch (e) {
+                    console.error("Error al inicializar Firebase:", e);
+                    setError("Error al inicializar la aplicación.");
+                    setLoading(false);
+                }
+
+                return () => unsubscribeAuth();
+            }, []);
+
+            // --- Carga de datos de Asistencia y Configuraciones (onSnapshot) ---
+            useEffect(() => {
+                if (!db || !userId) return;
+
+                const appId = window.__app_id || 'default-flex-tracker';
+                
+                // 1. Cargar Asistencia (registros diarios) - Colección privada
+                const attendanceCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/attendance`);
+                
+                // Filtrar por fechas dentro del trimestre actual
+                const qAttendance = query(attendanceCollectionRef, 
+                    where('date', '>=', quarterDetails.startDate.toISOString().split('T')[0]),
+                    where('date', '<=', quarterDetails.endDate.toISOString().split('T')[0])
+                );
+
+                const unsubscribeAttendance = onSnapshot(qAttendance, (snapshot) => {
+                    const fetchedAttendance = {};
+                    snapshot.docs.forEach(doc => {
+                        const data = doc.data();
+                        fetchedAttendance[data.date] = data.status;
+                    });
+                    setAttendance(fetchedAttendance);
+                }, (err) => {
+                    console.error("Error al obtener asistencia:", err);
+                    setError("Error al cargar los registros de asistencia.");
+                });
+
+                // 2. Cargar Configuraciones (Feriados/Vacaciones) - Documento privado (usando el ID del trimestre)
+                const configDocRef = doc(db, `artifacts/${appId}/users/${userId}/config`, `Q${quarterDetails.id}-${quarterDetails.startYear}`);
+
+                const unsubscribeConfig = onSnapshot(configDocRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        const config = docSnap.data();
+                        setHolidays(config.holidays || []);
+                        setVacations(config.vacations || []);
+                    } else {
+                        setHolidays([]);
+                        setVacations([]);
+                    }
+                }, (err) => {
+                    console.error("Error al obtener configuración:", err);
+                    setError("Error al cargar feriados y vacaciones.");
+                });
+
+                return () => {
+                    unsubscribeAttendance();
+                    unsubscribeConfig();
+                };
+            }, [db, userId, quarterDetails]);
+
+            // Función para obtener todos los días del trimestre
+            const getQuarterDays = useCallback(() => {
+                const days = [];
+                const current = new Date(quarterDetails.startDate);
+                const end = quarterDetails.endDate;
+                const todayStr = today.toISOString().split('T')[0]; // Usar la fecha de hoy para string comparison
+
+                while (current <= end) {
+                    const dateStr = current.toISOString().split('T')[0];
+                    const dayOfWeek = current.getDay(); // 0 (Sun) to 6 (Sat)
+                    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+
+                    // Clonar la fecha actual y establecer la hora a 0 para una comparación precisa de "día pasado"
+                    const currentStartOfDay = new Date(current);
+                    currentStartOfDay.setHours(0, 0, 0, 0);
+
+                    days.push({
+                        date: new Date(current), // Clone the date object
+                        dateStr,
+                        isWeekend,
+                        isPast: currentStartOfDay < startOfToday, // Comparar con el inicio de hoy
+                        isToday: dateStr === todayStr,
+                    });
+
+                    current.setDate(current.getDate() + 1);
+                }
+                return days;
+            }, [quarterDetails, startOfToday, today]);
+
+            const quarterDays = useMemo(() => getQuarterDays(), [getQuarterDays]);
+
+            // --- Cálculo de Estadísticas (Uso de useMemo para optimización) ---
+            const stats = useMemo(() => {
+                let totalWorkingDays = 0;
+                let elapsedWorkingDays = 0;
+                let attendedDays = 0;
+                let daysRemainingInQuarter = 0;
+
+                quarterDays.forEach(day => {
+                    const isExcluded = holidays.includes(day.dateStr) || vacations.includes(day.dateStr);
+
+                    // CLAVE: Solo contamos si NO es fin de semana Y NO está excluido por feriado/vacación
+                    if (!day.isWeekend && !isExcluded) { 
+                        totalWorkingDays++;
+
+                        if (day.isPast || day.isToday) {
+                            elapsedWorkingDays++;
+                            const status = attendance[day.dateStr];
+
+                            if (status === 'Attended') {
+                                attendedDays++;
+                            }
+                        } else {
+                            daysRemainingInQuarter++;
+                        }
+                    }
+                });
+
+                const targetDays = Math.ceil(totalWorkingDays * 0.50);
+                const currentPercentage = elapsedWorkingDays > 0 ? (attendedDays / elapsedWorkingDays) * 100 : 0;
+                
+                // Días de asistencia requeridos para el resto del trimestre para cumplir el 50% global
+                const requiredToMeetTarget = targetDays - attendedDays; 
+                const remainingWorkingDays = totalWorkingDays - elapsedWorkingDays;
+
+                let neededPercentageRemaining = 0;
+                if (remainingWorkingDays > 0) {
+                    neededPercentageRemaining = (requiredToMeetTarget / remainingWorkingDays) * 100;
+                }
+
+                // Si ya superó el objetivo, la proyección es 100% de éxito.
+                if (requiredToMeetTarget <= 0) {
+                    neededPercentageRemaining = 0; // Already met or surpassed the goal
+                }
+
+                // Proyección: si asiste todos los días restantes
+                const projectedAttendance = ((attendedDays + daysRemainingInQuarter) / totalWorkingDays) * 100;
+                const willMeetTarget = (attendedDays + daysRemainingInQuarter) >= targetDays;
+
+
+                return {
+                    totalWorkingDays,
+                    targetDays,
+                    elapsedWorkingDays, // Días hábiles hasta hoy (inclusive)
+                    attendedDays,
+                    daysRemainingInQuarter,
+                    currentPercentage: currentPercentage.toFixed(1),
+                    neededPercentageRemaining: Math.max(0, neededPercentageRemaining).toFixed(1),
+                    projectedAttendance: Math.min(100, projectedAttendance).toFixed(1),
+                    willMeetTarget,
+                };
+            }, [quarterDetails, quarterDays, attendance, holidays, vacations]);
+
+
+            // --- Funciones de manipulación de datos ---
+
+            // Manejar el registro de asistencia (Attended, Not_Attended)
+            const updateAttendanceStatus = async (dateStr, status) => {
+                if (!db || !userId) {
+                    setError("Aplicación no inicializada.");
+                    return;
+                }
+                const appId = window.__app_id || 'default-flex-tracker';
+                const docRef = doc(db, `artifacts/${appId}/users/${userId}/attendance`, dateStr);
+                const currentStatus = attendance[dateStr];
+
+                // 1. Si el nuevo estado es 'None' o se está intentando desmarcar el estado actual
+                if (status === 'None' || currentStatus === status) {
+                    try {
+                        // Solo eliminamos si existe un registro
+                        if (currentStatus) {
+                            await deleteDoc(docRef);
+                        }
+                    } catch (e) {
+                        console.error("Error deleting attendance:", e);
+                        setError("Error al desmarcar la asistencia.");
+                    }
+                } else {
+                    // 2. Establecer el nuevo estado (Attended o Not_Attended)
+                    try {
+                        await setDoc(docRef, {
+                            date: dateStr,
+                            status: status,
+                            timestamp: Timestamp.now(),
+                        }, { merge: true });
+                    } catch (e) {
+                        console.error("Error setting attendance:", e);
+                        setError("Error al registrar la asistencia.");
+                    }
+                }
+            };
+            
+            // Guardar feriados o vacaciones
+            const saveConfig = async (key, dates) => {
+                if (!db || !userId) return;
+                const appId = window.__app_id || 'default-flex-tracker';
+                const docRef = doc(db, `artifacts/${appId}/users/${userId}/config`, `Q${quarterDetails.id}-${quarterDetails.startYear}`);
+
+                try {
+                    // Asegurarse de guardar un array de strings de fechas (YYYY-MM-DD)
+                    const sortedDates = dates
+                        .filter(d => d && d.trim().match(/^\d{4}-\d{2}-\d{2}$/)) // Filtrar y validar formato
+                        .sort();
+                        
+                    await setDoc(docRef, { [key]: [...new Set(sortedDates)] }, { merge: true }); // Usar Set para eliminar duplicados
+                    setError('');
+                } catch (e) {
+                    console.error("Error saving config:", e);
+                    setError(`Error al guardar ${key}.`);
+                }
+            };
+
+            // --- Componente de Entrada de Fechas Mejorado ---
+            const DateInputList = ({ title, dates, setDates, saveKey }) => {
+                const [newDate, setNewDate] = useState(''); // Estado para la fecha que se está escribiendo
+                const currentDates = saveKey === 'holidays' ? holidays : vacations;
+
+                const handleAddDate = () => {
+                    if (newDate && !currentDates.includes(newDate)) {
+                        // Agregar la nueva fecha al estado temporal y luego ordenar y guardar
+                        const updatedDates = [...currentDates, newDate].sort();
+                        if (saveKey === 'holidays') setHolidays(updatedDates);
+                        if (saveKey === 'vacations') setVacations(updatedDates);
+                        setNewDate(''); // Limpiar la entrada
+                        saveConfig(saveKey, updatedDates); // Guardar inmediatamente
+                    }
+                };
+
+                const handleRemoveDate = (dateToRemove) => {
+                    const updatedDates = currentDates.filter(d => d !== dateToRemove);
+                    if (saveKey === 'holidays') setHolidays(updatedDates);
+                    if (saveKey === 'vacations') setVacations(updatedDates);
+                    saveConfig(saveKey, updatedDates); // Guardar inmediatamente
+                };
+                
+                // Removido todayString y la validación para permitir fechas pasadas
+
+
+                return (
+                    <div className="space-y-3 p-4 rounded-xl shadow-inner border border-blue-800" style={{backgroundColor: MIDNIGHT_BLUE_LIGHTER}}>
+                        <h3 className="text-lg font-semibold text-white">{title}</h3>
+
+                        {/* Entrada de Nueva Fecha */}
+                        <div className="flex space-x-2">
+                            <input
+                                type="date"
+                                value={newDate}
+                                onChange={(e) => setNewDate(e.target.value)}
+                                className="flex-grow p-2 border text-white border-blue-800 rounded-lg focus:ring-orange-500 focus:border-orange-500 text-sm font-mono"
+                                style={{backgroundColor: MIDNIGHT_BLUE}}
+                                // Eliminados min y max para permitir fechas pasadas
+                            />
+                            <button
+                                onClick={handleAddDate}
+                                disabled={!newDate || currentDates.includes(newDate)}
+                                className="py-2 px-4 bg-orange-500 text-white font-medium rounded-lg hover:bg-orange-600 transition duration-150 disabled:bg-orange-300 disabled:cursor-not-allowed"
+                            >
+                                Añadir
+                            </button>
+                        </div>
+                        {/* Eliminado el mensaje de advertencia sobre fechas pasadas */}
+
+
+                        {/* Lista de Fechas Añadidas (Chips) */}
+                        <div className="flex flex-wrap gap-2 pt-2 min-h-[40px] border-t border-blue-800">
+                            {currentDates.map(dateStr => (
+                                <div key={dateStr} className="flex items-center border border-blue-800 rounded-full pr-1 shadow-sm text-sm" style={{backgroundColor: MIDNIGHT_BLUE_DARKER}}>
+                                    <span className="px-3 py-1 font-mono text-white">{dateStr}</span>
+                                    <button
+                                        onClick={() => handleRemoveDate(dateStr)}
+                                        className="w-6 h-6 rounded-full bg-orange-100 text-orange-600 hover:bg-orange-200 ml-1 transition duration-150 flex items-center justify-center"
+                                        title="Eliminar fecha"
+                                    >
+                                        ❌
+                                    </button>
+                                </div>
+                            ))}
+                            {currentDates.length === 0 && (
+                                <p className="text-sm text-gray-400 italic">No hay fechas configuradas aún.</p>
+                            )}
+                        </div>
+                    </div>
+                );
+            };
+
+
+            if (loading) {
+                return (
+                    // Uso de estilo en línea para Azul Medianoche (#191970)
+                    <div className="flex justify-center items-center h-screen" style={{ backgroundColor: MIDNIGHT_BLUE }}>
+                        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-orange-500"></div>
+                        <p className="ml-4 text-gray-100">Cargando...</p>
+                    </div>
+                );
+            }
+
+            // Estilo para el indicador de porcentaje
+            const getPercentageColor = (percentage) => {
+                const p = parseFloat(percentage);
+                if (p >= 50) return 'text-green-500'; // Mantener verde para "Meta superada"
+                if (p >= 35) return 'text-yellow-400'; // Amarillo/dorado para "Cerca"
+                return 'text-red-500'; // Rojo para "Bajo"
+            };
+            
+            // Lógica para el mensaje de Proyección revisada
+            let projectionMessage = null;
+            let projectionStyle = 'text-gray-100'; // Base para usar MIDNIGHT_BLUE_LIGHTER
+
+            if (stats.elapsedWorkingDays > 0) {
+                // Caso 1: Ya cumplió la meta del 50%
+                if (stats.attendedDays >= stats.targetDays) {
+                    projectionMessage = '¡Felicidades! Ya superaste la meta del 50% de asistencia. ¡Sigue así!';
+                    projectionStyle = 'bg-green-600 text-white shadow-lg';
+                } 
+                // Caso 2: Todavía no cumple la meta, pero puede cumplirla asistiendo al 100% de lo que queda
+                else if (stats.willMeetTarget) {
+                    projectionMessage = (
+                        <p>
+                            Aún puedes alcanzar el 50%. Necesitas asistir al menos al <span className="font-extrabold">{stats.neededPercentageRemaining}%</span> de los días restantes.
+                        </p>
+                    );
+                    projectionStyle = 'bg-orange-500 text-white shadow-lg';
+                }
+                // Caso 3: Es imposible alcanzar la meta del 50% aunque asista a todo lo que queda
+                else {
+                    projectionMessage = 'Atención: Incluso asistiendo al 100% de lo que queda, no alcanzarás la meta del 50%.';
+                    projectionStyle = 'bg-red-600 text-white shadow-lg';
+                }
+            } else {
+                // Caso 4: No ha transcurrido ni un día hábil
+                projectionMessage = 'El registro de asistencia comienza hoy. ¡Marca los días que van pasando!';
+                projectionStyle = 'bg-yellow-400 text-blue-950 shadow-lg';
+            }
+
+
+            return (
+                // Uso de estilo en línea para el fondo principal Azul Medianoche (#191970)
+                <div className="min-h-screen flex flex-col items-center p-4 font-sans" style={{ backgroundColor: MIDNIGHT_BLUE }}>
+                    {/* Contenedor principal con estilo iOS, usando un tono ligeramente diferente para el fondo */}
+                    <div className="w-full max-w-md rounded-3xl shadow-2xl p-6 space-y-6 overflow-hidden border-8 border-white/10" style={{backgroundColor: MIDNIGHT_BLUE_DARKER}}>
+
+                        {/* Encabezado */}
+                        <header className="flex flex-col space-y-1 border-b border-blue-800 pb-4">
+                            <div className="flex items-center">
+                                <FlexTrackerLogo />
+                                <h1 className="text-3xl font-bold text-white">Flex Tracker</h1>
+                            </div>
+                            <h2 className="text-xl font-medium text-orange-400">
+                                {quarterDetails.name} ({quarterDetails.startYear} - {quarterDetails.endYear})
+                            </h2>
+                            <p className="text-sm text-gray-300">
+                                Total de días hábiles: <span className="font-semibold">{stats.totalWorkingDays}</span>
+                            </p>
+                        </header>
+
+                        {error && (
+                            <div className="p-3 bg-red-700 text-white border-l-4 border-red-500 rounded-lg">
+                                {error}
+                            </div>
+                        )}
+
+                        {/* Resumen y Métricas */}
+                        <div className="grid grid-cols-2 gap-3 p-3 rounded-xl shadow-inner border border-blue-800" style={{backgroundColor: MIDNIGHT_BLUE_LIGHTER}}>
+                            <MetricCard title="Días Asistidos" value={stats.attendedDays} color="text-green-500" MIDNIGHT_BLUE_DARKER={MIDNIGHT_BLUE_DARKER} />
+                            <MetricCard title="Días Requeridos (50%)" value={stats.targetDays} color="text-yellow-400" MIDNIGHT_BLUE_DARKER={MIDNIGHT_BLUE_DARKER} />
+                            <MetricCard title="Asistencia Actual" value={`${stats.currentPercentage}%`} color={getPercentageColor(stats.currentPercentage)} MIDNIGHT_BLUE_DARKER={MIDNIGHT_BLUE_DARKER} />
+                            <MetricCard title="Días Hábiles Transcurridos" value={stats.elapsedWorkingDays} color="text-orange-400" MIDNIGHT_BLUE_DARKER={MIDNIGHT_BLUE_DARKER} />
+                        </div>
+
+                        {/* Mensaje de Proyección */}
+                        <div className={`p-3 rounded-xl text-center font-medium ${projectionStyle}`} style={!projectionStyle.includes('bg-') ? {backgroundColor: MIDNIGHT_BLUE_LIGHTER} : {}}>
+                            {projectionMessage}
+                        </div>
+
+                        {/* Leyenda y Configuraciones de Fechas */}
+                        <div className="space-y-4">
+                            <CalendarLegend MIDNIGHT_BLUE_LIGHTER={MIDNIGHT_BLUE_LIGHTER} MIDNIGHT_BLUE_DARKER={MIDNIGHT_BLUE_DARKER} />
+                            <DateInputList 
+                                title="Configurar Feriados (Días NO Laborables)" 
+                                dates={holidays} 
+                                setDates={setHolidays} 
+                                saveKey="holidays" 
+                            />
+                            <DateInputList 
+                                title="Configurar Vacaciones (Días Propios)" 
+                                dates={vacations} 
+                                setDates={setVacations} 
+                                saveKey="vacations" 
+                            />
+                        </div>
+
+
+                        {/* Visor de Días del Trimestre en Calendario */}
+                        <h3 className="text-xl font-bold text-white pt-4 border-t border-blue-800 mt-4">Calendario del Trimestre</h3>
+                        <div className="overflow-y-auto max-h-[60vh] space-y-6 quarter-calendar-container">
+                            <QuarterCalendar 
+                                quarterDays={quarterDays}
+                                attendance={attendance}
+                                holidays={holidays}
+                                vacations={vacations}
+                                updateAttendanceStatus={updateAttendanceStatus}
+                                MIDNIGHT_BLUE_LIGHTER={MIDNIGHT_BLUE_LIGHTER}
+                                MIDNIGHT_BLUE_DARKER={MIDNIGHT_BLUE_DARKER}
+                                MIDNIGHT_BLUE={MIDNIGHT_BLUE}
+                            />
+                        </div>
+
+                        {/* Pie de página */}
+                        <footer className="text-center text-xs text-gray-500 pt-4 border-t border-blue-800">
+                            Datos guardados automáticamente en Firebase Firestore.
+                        </footer>
+                    </div>
+                </div>
+            );
+        };
+
+        // Componente para mostrar una métrica
+        const MetricCard = ({ title, value, color, MIDNIGHT_BLUE_DARKER }) => (
+            <div className="p-3 rounded-xl shadow-sm text-center text-white border border-blue-800" style={{backgroundColor: MIDNIGHT_BLUE_DARKER}}>
+                <p className={`text-lg font-bold leading-none mb-1 ${color}`}>{value}</p>
+                <p className="text-xs text-gray-300 font-medium">{title}</p>
+            </div>
+        );
+
+        // Componente de Leyenda del Calendario
+        const CalendarLegend = ({ MIDNIGHT_BLUE_LIGHTER, MIDNIGHT_BLUE_DARKER }) => (
+            <div className="p-3 rounded-xl shadow-sm border border-blue-800" style={{backgroundColor: MIDNIGHT_BLUE_LIGHTER}}>
+                <h4 className="text-sm font-semibold mb-2 text-white">Leyenda</h4>
+                <div className="grid grid-cols-3 gap-2 text-xs">
+                    <LegendItem color="bg-green-500" text="Asistido (Click)" />
+                    <LegendItem color="bg-red-500" text="No Asistido (Click derecho)" />
+                    <LegendItem color={`border-2 border-orange-400`} style={{backgroundColor: MIDNIGHT_BLUE_LIGHTER}} text="Hoy" />
+                    <LegendItem color="bg-yellow-500" text="Vacación / Feriado" />
+                    <LegendItem color="" style={{backgroundColor: MIDNIGHT_BLUE_LIGHTER}} text="Fin de Semana" />
+                    <LegendItem color={`border border-blue-800`} style={{backgroundColor: MIDNIGHT_BLUE_DARKER}} text="Pendiente" />
+                </div>
+            </div>
+        );
+
+        const LegendItem = ({ color, text, style }) => (
+            <div className="flex items-center space-x-2">
+                <span className={`w-3 h-3 rounded-full ${color}`} style={style}></span>
+                <span className="text-gray-200">{text}</span>
+            </div>
+        );
+
+
+        // --- Componentes del Calendario ---
+
+        // Agrupa los días por mes
+        const groupByMonth = (days) => {
+            return days.reduce((acc, day) => {
+                const monthYear = day.date.getFullYear() + '-' + day.date.getMonth();
+                if (!acc[monthYear]) {
+                    acc[monthYear] = {
+                        monthName: day.date.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }),
+                        days: [],
+                        // Primer día del mes (0=Dom, 1=Lun, etc.)
+                        startDayOfWeek: new Date(day.date.getFullYear(), day.date.getMonth(), 1).getDay(),
+                    };
+                }
+                acc[monthYear].days.push(day);
+                return acc;
+            }, {});
+        };
+
+
+        // Vista del calendario para todo el trimestre
+        const QuarterCalendar = ({ quarterDays, attendance, holidays, vacations, updateAttendanceStatus, MIDNIGHT_BLUE_LIGHTER, MIDNIGHT_BLUE_DARKER, MIDNIGHT_BLUE }) => {
+            const months = useMemo(() => groupByMonth(quarterDays), [quarterDays]);
+
+            return (
+                <div className="space-y-8">
+                    {Object.values(months).map((monthData, index) => (
+                        <MonthCalendar 
+                            key={index} 
+                            monthData={monthData}
+                            attendance={attendance}
+                            holidays={holidays}
+                            vacations={vacations}
+                            updateAttendanceStatus={updateAttendanceStatus}
+                            MIDNIGHT_BLUE_LIGHTER={MIDNIGHT_BLUE_LIGHTER}
+                            MIDNIGHT_BLUE_DARKER={MIDNIGHT_BLUE_DARKER}
+                            MIDNIGHT_BLUE={MIDNIGHT_BLUE}
+                        />
+                    ))}
+                </div>
+            );
+        };
+
+        // Vista de un solo mes
+        const MonthCalendar = ({ monthData, attendance, holidays, vacations, updateAttendanceStatus, MIDNIGHT_BLUE_LIGHTER, MIDNIGHT_BLUE_DARKER, MIDNIGHT_BLUE }) => {
+            const daysOfWeek = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+
+            // Determinar cuántos espacios vacíos poner al inicio (offset)
+            const initialOffset = monthData.startDayOfWeek;
+
+            // Crear un array de celdas (incluyendo espacios vacíos)
+            const calendarCells = Array(initialOffset).fill(null).concat(monthData.days);
+
+            return (
+                <div className="p-4 rounded-xl shadow-md border border-blue-800" style={{backgroundColor: MIDNIGHT_BLUE_LIGHTER}}>
+                    <h4 className="text-center text-lg font-bold text-white mb-3 capitalize">{monthData.monthName}</h4>
+                    
+                    {/* Encabezados de Días de la Semana */}
+                    <div className="grid grid-cols-7 gap-1 text-center font-semibold text-xs text-gray-400 mb-1">
+                        {daysOfWeek.map(day => <div key={day}>{day}</div>)}
+                    </div>
+
+                    {/* Cuadrícula de Días */}
+                    <div className="grid grid-cols-7 gap-1">
+                        {calendarCells.map((day, index) => (
+                            <CalendarCell 
+                                key={index}
+                                day={day}
+                                attendance={attendance}
+                                holidays={holidays}
+                                vacations={vacations}
+                                updateAttendanceStatus={updateAttendanceStatus}
+                                MIDNIGHT_BLUE_LIGHTER={MIDNIGHT_BLUE_LIGHTER}
+                                MIDNIGHT_BLUE_DARKER={MIDNIGHT_BLUE_DARKER}
+                                MIDNIGHT_BLUE={MIDNIGHT_BLUE}
+                            />
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+
+        // Celda individual del calendario
+        const CalendarCell = ({ day, attendance, holidays, vacations, updateAttendanceStatus, MIDNIGHT_BLUE_LIGHTER, MIDNIGHT_BLUE_DARKER, MIDNIGHT_BLUE }) => {
+            if (!day) {
+                return <div className="h-10"></div>; // Celda vacía para el offset
+            }
+
+            const dateStr = day.dateStr;
+            const currentStatus = attendance[dateStr] || 'None';
+            
+            // Es considerado día hábil si NO es fin de semana y NO es feriado/vacación
+            const isWorkingDay = !day.isWeekend && !holidays.includes(dateStr) && !vacations.includes(dateStr);
+            const isExcludedDay = !isWorkingDay && (holidays.includes(dateStr) || vacations.includes(dateStr));
+            
+            // El único caso deshabilitado es el fin de semana, ya que los días pasados ahora son editables
+            const isDisabled = day.isWeekend; 
+            
+            let cellClasses = "h-10 flex items-center justify-center rounded-lg text-sm font-medium transition duration-150 cursor-pointer p-0.5 relative";
+            let statusIcon = null;
+            let cellStyle = {};
+
+
+            // 1. Estilos y Estado
+            if (day.isWeekend) {
+                cellStyle.backgroundColor = MIDNIGHT_BLUE_LIGHTER;
+                cellClasses += " text-gray-400 cursor-not-allowed";
+            } else if (holidays.includes(dateStr) || vacations.includes(dateStr)) {
+                cellClasses += " bg-yellow-500 text-blue-950 hover:bg-yellow-400 border border-yellow-400";
+            } else if (currentStatus === 'Attended') {
+                cellClasses += " bg-green-500 text-white shadow-md hover:bg-green-600";
+                statusIcon = '✅'; 
+            } else if (currentStatus === 'Not_Attended') {
+                cellClasses += " bg-red-500 text-white shadow-md hover:bg-red-600";
+                statusIcon = '❌';
+            } else if (day.isToday) {
+                cellClasses += " border-2 border-orange-400 text-orange-400 hover:opacity-80 font-extrabold";
+                cellStyle.backgroundColor = MIDNIGHT_BLUE_LIGHTER;
+            } else {
+                cellStyle.backgroundColor = MIDNIGHT_BLUE_DARKER;
+                cellClasses += " text-white border border-blue-800 hover:opacity-80";
+            }
+            
+            if (isDisabled) {
+                cellClasses += " opacity-50 cursor-not-allowed"; 
+            }
+
+            // 2. Título (Tooltip)
+            let title = day.dateStr;
+            if (day.isWeekend) title += " - Fin de Semana";
+            else if (holidays.includes(dateStr)) title += " - Feriado";
+            else if (vacations.includes(dateStr)) title += " - Vacación";
+            else if (day.isToday) title += " - Hoy";
+            
+            if (currentStatus === 'Attended') title += " (Asistido)";
+            else if (currentStatus === 'Not_Attended') title += " (No Asistido)";
+            else if (!day.isWeekend && !isExcludedDay) title += " (Pendiente)";
+
+
+            // 3. Manejo de Clic 
+            const handleCellClick = () => {
+                if (isDisabled) return;
+
+                // Si es un día hábil (no excluido, no fin de semana)
+                if (isWorkingDay) {
+                    // Alternar: Attended <-> None
+                    const newStatus = currentStatus === 'Attended' ? 'None' : 'Attended';
+                    updateAttendanceStatus(dateStr, newStatus);
+                } else if (isExcludedDay && currentStatus !== 'None') {
+                    // Si es un día excluido y ya tiene un estado, permitir desmarcar (ej: un error de registro)
+                    updateAttendanceStatus(dateStr, 'None'); 
+                }
+            };
+            
+            // Usar onContextMenu para ofrecer la opción de 'No Asistido'
+            const handleContextMenu = (e) => {
+                e.preventDefault();
+                if (isDisabled || !isWorkingDay) return;
+
+                // Si es un día hábil, alternar: Not_Attended <-> None
+                const newStatus = currentStatus === 'Not_Attended' ? 'None' : 'Not_Attended';
+                updateAttendanceStatus(dateStr, newStatus);
+            };
+
+
+            return (
+                <div 
+                    className={cellClasses} 
+                    title={title}
+                    onClick={handleCellClick}
+                    onContextMenu={handleContextMenu} // Click derecho para 'No Asistido'
+                    style={cellStyle}
+                >
+                    {/* Mostrar el número del día */}
+                    <span className={`${day.isToday && !currentStatus && 'font-extrabold'} ${currentStatus === 'Attended' || currentStatus === 'Not_Attended' ? 'text-white' : (isExcludedDay ? 'text-blue-950' : 'text-white')}`}>
+                        {day.date.getDate()}
+                    </span>
+                    {/* Mostrar ícono de estado */}
+                    {statusIcon && (
+                        <span className="absolute bottom-0 right-0 text-xs leading-none">
+                            {statusIcon}
+                        </span>
+                    )}
+                </div>
+            );
+        };
+
+        // Montar la aplicación React en el elemento root
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
