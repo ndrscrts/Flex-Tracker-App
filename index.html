@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Flex Tracker - App PWA</title>
+    <title>Flex Tracker - Local PWA</title>
     <!-- Configuración para PWA en iOS -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -14,24 +14,6 @@
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <!-- Imports de Firebase (usamos la versión modular) -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, onSnapshot, doc, setDoc, query, where, Timestamp, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        
-        // Estas variables se definen globalmente para que el código JSX/Babel las pueda acceder
-        window.firebase = { 
-            initializeApp, 
-            getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
-            getFirestore, collection, onSnapshot, doc, setDoc, query, where, Timestamp, deleteDoc
-        };
-
-        // Variables de entorno (asegúrate de que estas sean accesibles o maneja valores predeterminados)
-        window.__app_id = typeof __app_id !== 'undefined' ? __app_id : 'default-flex-tracker';
-        window.__firebase_config = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
-        window.__initial_auth_token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-    </script>
     
     <style>
         /* Estilo base para el cuerpo */
@@ -50,16 +32,39 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        // El código React/JSX de AttendanceTracker.jsx va aquí
-        const { useState, useEffect, useCallback, useMemo } = React;
-        const { initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } = window.firebase;
-        const { getFirestore, collection, onSnapshot, doc, setDoc, query, where, Timestamp, deleteDoc } = window.firebase;
+        const { useState, useEffect, useMemo, useCallback } = React;
+
+        // --- FUNCIONES DE ALMACENAMIENTO LOCAL (localStorage) ---
+        
+        const loadState = (key, defaultValue) => {
+            try {
+                const serializedState = localStorage.getItem(key);
+                if (serializedState === null) {
+                    return defaultValue;
+                }
+                // Firestore guardaba las fechas como YYYY-MM-DD strings, por lo que JSON.parse está bien
+                return JSON.parse(serializedState);
+            } catch (err) {
+                console.error("Error loading state from localStorage:", key, err);
+                return defaultValue;
+            }
+        };
+
+        const saveState = (key, state) => {
+            try {
+                const serializedState = JSON.stringify(state);
+                localStorage.setItem(key, serializedState);
+            } catch (err) {
+                console.error("Error saving state to localStorage:", key, err);
+            }
+        };
+
 
         // Definición de los trimestres personalizados
         const QUARTERS = [
             { id: 1, name: 'T1', months: [1, 2, 3] }, // Feb (1), Mar (2), Apr (3)
             { id: 2, name: 'T2', months: [4, 5, 6] }, // May (4), Jun (5), Jul (6)
-            { id: 3, name: 'T3', months: [7, 8, 9] }, // Aug (7), Sep (8), Oct (9)
+            { id: 3, name: 'T3', months: [7, 8, 9] }, // Aug (7), Sep (9), Oct (9)
             { id: 4, name: 'T4', months: [10, 11, 0] }, // Nov (10), Dec (11), Jan (0)
         ];
 
@@ -68,43 +73,36 @@
             const month = date.getMonth(); // 0 (Jan) to 11 (Dec)
             let year = date.getFullYear();
 
-            // Determinar el trimestre actual basado en el mes
             let currentQuarter = QUARTERS.find(q => q.months.includes(month));
 
-            // Ajuste especial para el T4 (Nov, Dec, Jan)
             if (month === 10 || month === 11) { // Nov or Dec
-                // The quarter starts in the current year
                 currentQuarter = QUARTERS.find(q => q.id === 4);
             } else if (month === 0) { // Jan
-                // The quarter started in the previous year
                 currentQuarter = QUARTERS.find(q => q.id === 4);
-                year = year - 1; // Start year is previous year
+                year = year - 1; 
             }
 
             if (!currentQuarter) {
-                // Default to Q1 if something is wrong
                 currentQuarter = QUARTERS.find(q => q.id === 1);
             }
 
-            // Determine Start and End dates
             let startMonth = currentQuarter.months[0];
             let endMonth = currentQuarter.months[2];
             let startYear = year;
             let endYear = year;
 
-            // Adjust years for Q4
             if (currentQuarter.id === 4) {
-                if (month === 0) { // Jan is current month
+                if (month === 0) {
                     startYear = year;
                     endYear = year + 1;
-                } else { // Nov, Dec are current months
+                } else {
                     startYear = year;
                     endYear = year + 1;
                 }
             }
 
             const startDate = new Date(startYear, startMonth, 1);
-            const endDate = new Date(endYear, endMonth + 1, 0); // Last day of the end month
+            const endDate = new Date(endYear, endMonth + 1, 0);
 
             return {
                 id: currentQuarter.id,
@@ -153,20 +151,16 @@
 
         // Componente principal de la aplicación
         const App = () => {
-            // Estado de la aplicación y Firebase
-            const [db, setDb] = useState(null);
-            const [userId, setUserId] = useState(null);
             const [loading, setLoading] = useState(true);
             const [error, setError] = useState('');
 
-            // Estado de Asistencia
-            const [attendance, setAttendance] = useState({}); // { 'YYYY-MM-DD': 'Attended' | 'Vacation' | 'Holiday' }
+            // Estado de Asistencia y Configuraciones
+            const [attendance, setAttendance] = useState({}); // { 'YYYY-MM-DD': 'Attended' | 'Not_Attended' }
             const [holidays, setHolidays] = useState([]); // Array de fechas YYYY-MM-DD
             const [vacations, setVacations] = useState([]); // Array de fechas YYYY-MM-DD
 
             // Obtener detalles del trimestre actual
             const today = useMemo(() => new Date(), []);
-            // Para una comparación de fechas precisa (ignorando la hora)
             const startOfToday = useMemo(() => {
                 const d = new Date(today);
                 d.setHours(0, 0, 0, 0);
@@ -174,134 +168,60 @@
             }, [today]);
             const quarterDetails = useMemo(() => getQuarterDetails(today), [today]);
             
-            // Color base Azul Medianoche para usar en clases dinámicas y estilos en línea
             const MIDNIGHT_BLUE = '#191970';
             const MIDNIGHT_BLUE_LIGHTER = 'rgba(25,25,112,0.7)';
             const MIDNIGHT_BLUE_DARKER = 'rgba(25,25,112,0.9)';
+            
+            // Llaves de almacenamiento local específicas para el trimestre
+            const quarterKey = `Q${quarterDetails.id}-${quarterDetails.startYear}`;
+            const ATTENDANCE_KEY = `flex_tracker_attendance_${quarterKey}`;
+            const HOLIDAYS_KEY = `flex_tracker_holidays_${quarterKey}`;
+            const VACATIONS_KEY = `flex_tracker_vacations_${quarterKey}`;
 
 
-            // --- Configuración de Firebase y Autenticación ---
+            // --- Carga Inicial de Datos (Desde localStorage) ---
             useEffect(() => {
-                let unsubscribeAuth = () => {};
+                // Cargar asistencia y configuraciones del trimestre actual
+                setAttendance(loadState(ATTENDANCE_KEY, {}));
+                setHolidays(loadState(HOLIDAYS_KEY, []));
+                setVacations(loadState(VACATIONS_KEY, []));
+                setLoading(false); // Listo para mostrar la UI
+            }, [quarterKey]);
 
-                try {
-                    // Acceder a las variables globales definidas en el script type="module"
-                    const appId = window.__app_id || 'default-flex-tracker';
-                    const firebaseConfig = window.__firebase_config ? JSON.parse(window.__firebase_config) : null;
-                    const initialAuthToken = window.__initial_auth_token;
-
-                    if (!firebaseConfig) {
-                        setError("Error: Configuración de Firebase no encontrada.");
-                        setLoading(false);
-                        return;
-                    }
-
-                    const app = initializeApp(firebaseConfig);
-                    const firestoreDb = getFirestore(app);
-                    const firebaseAuth = getAuth(app);
-
-                    setDb(firestoreDb);
-
-                    unsubscribeAuth = onAuthStateChanged(firebaseAuth, async (user) => {
-                        if (user) {
-                            setUserId(user.uid);
-                        } else {
-                            try {
-                                const anonUserCredential = await signInAnonymously(firebaseAuth);
-                                setUserId(anonUserCredential.user.uid);
-                            } catch (authError) {
-                                console.error("Error en autenticación anónima:", authError);
-                                setError("Error de autenticación. No se pueden cargar los datos.");
-                            }
-                        }
-                        setLoading(false);
-                    });
-
-                    if (initialAuthToken) {
-                        signInWithCustomToken(firebaseAuth, initialAuthToken)
-                            .catch(e => console.error("Error al iniciar sesión con token personalizado:", e));
-                    }
-
-                } catch (e) {
-                    console.error("Error al inicializar Firebase:", e);
-                    setError("Error al inicializar la aplicación.");
-                    setLoading(false);
-                }
-
-                return () => unsubscribeAuth();
-            }, []);
-
-            // --- Carga de datos de Asistencia y Configuraciones (onSnapshot) ---
+            // --- Persistencia de Datos (Hacia localStorage) ---
             useEffect(() => {
-                if (!db || !userId) return;
+                saveState(ATTENDANCE_KEY, attendance);
+            }, [attendance, ATTENDANCE_KEY]);
+            
+            useEffect(() => {
+                saveState(HOLIDAYS_KEY, holidays);
+            }, [holidays, HOLIDAYS_KEY]);
 
-                const appId = window.__app_id || 'default-flex-tracker';
-                
-                // 1. Cargar Asistencia (registros diarios) - Colección privada
-                const attendanceCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/attendance`);
-                
-                // Filtrar por fechas dentro del trimestre actual
-                const qAttendance = query(attendanceCollectionRef, 
-                    where('date', '>=', quarterDetails.startDate.toISOString().split('T')[0]),
-                    where('date', '<=', quarterDetails.endDate.toISOString().split('T')[0])
-                );
+            useEffect(() => {
+                saveState(VACATIONS_KEY, vacations);
+            }, [vacations, VACATIONS_KEY]);
 
-                const unsubscribeAttendance = onSnapshot(qAttendance, (snapshot) => {
-                    const fetchedAttendance = {};
-                    snapshot.docs.forEach(doc => {
-                        const data = doc.data();
-                        fetchedAttendance[data.date] = data.status;
-                    });
-                    setAttendance(fetchedAttendance);
-                }, (err) => {
-                    console.error("Error al obtener asistencia:", err);
-                    setError("Error al cargar los registros de asistencia.");
-                });
-
-                // 2. Cargar Configuraciones (Feriados/Vacaciones) - Documento privado (usando el ID del trimestre)
-                const configDocRef = doc(db, `artifacts/${appId}/users/${userId}/config`, `Q${quarterDetails.id}-${quarterDetails.startYear}`);
-
-                const unsubscribeConfig = onSnapshot(configDocRef, (docSnap) => {
-                    if (docSnap.exists()) {
-                        const config = docSnap.data();
-                        setHolidays(config.holidays || []);
-                        setVacations(config.vacations || []);
-                    } else {
-                        setHolidays([]);
-                        setVacations([]);
-                    }
-                }, (err) => {
-                    console.error("Error al obtener configuración:", err);
-                    setError("Error al cargar feriados y vacaciones.");
-                });
-
-                return () => {
-                    unsubscribeAttendance();
-                    unsubscribeConfig();
-                };
-            }, [db, userId, quarterDetails]);
 
             // Función para obtener todos los días del trimestre
             const getQuarterDays = useCallback(() => {
                 const days = [];
                 const current = new Date(quarterDetails.startDate);
                 const end = quarterDetails.endDate;
-                const todayStr = today.toISOString().split('T')[0]; // Usar la fecha de hoy para string comparison
+                const todayStr = today.toISOString().split('T')[0];
 
                 while (current <= end) {
                     const dateStr = current.toISOString().split('T')[0];
-                    const dayOfWeek = current.getDay(); // 0 (Sun) to 6 (Sat)
+                    const dayOfWeek = current.getDay();
                     const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
 
-                    // Clonar la fecha actual y establecer la hora a 0 para una comparación precisa de "día pasado"
                     const currentStartOfDay = new Date(current);
                     currentStartOfDay.setHours(0, 0, 0, 0);
 
                     days.push({
-                        date: new Date(current), // Clone the date object
+                        date: new Date(current),
                         dateStr,
                         isWeekend,
-                        isPast: currentStartOfDay < startOfToday, // Comparar con el inicio de hoy
+                        isPast: currentStartOfDay < startOfToday,
                         isToday: dateStr === todayStr,
                     });
 
@@ -322,7 +242,6 @@
                 quarterDays.forEach(day => {
                     const isExcluded = holidays.includes(day.dateStr) || vacations.includes(day.dateStr);
 
-                    // CLAVE: Solo contamos si NO es fin de semana Y NO está excluido por feriado/vacación
                     if (!day.isWeekend && !isExcluded) { 
                         totalWorkingDays++;
 
@@ -342,7 +261,6 @@
                 const targetDays = Math.ceil(totalWorkingDays * 0.50);
                 const currentPercentage = elapsedWorkingDays > 0 ? (attendedDays / elapsedWorkingDays) * 100 : 0;
                 
-                // Días de asistencia requeridos para el resto del trimestre para cumplir el 50% global
                 const requiredToMeetTarget = targetDays - attendedDays; 
                 const remainingWorkingDays = totalWorkingDays - elapsedWorkingDays;
 
@@ -351,12 +269,10 @@
                     neededPercentageRemaining = (requiredToMeetTarget / remainingWorkingDays) * 100;
                 }
 
-                // Si ya superó el objetivo, la proyección es 100% de éxito.
                 if (requiredToMeetTarget <= 0) {
-                    neededPercentageRemaining = 0; // Already met or surpassed the goal
+                    neededPercentageRemaining = 0; 
                 }
 
-                // Proyección: si asiste todos los días restantes
                 const projectedAttendance = ((attendedDays + daysRemainingInQuarter) / totalWorkingDays) * 100;
                 const willMeetTarget = (attendedDays + daysRemainingInQuarter) >= targetDays;
 
@@ -364,7 +280,7 @@
                 return {
                     totalWorkingDays,
                     targetDays,
-                    elapsedWorkingDays, // Días hábiles hasta hoy (inclusive)
+                    elapsedWorkingDays,
                     attendedDays,
                     daysRemainingInQuarter,
                     currentPercentage: currentPercentage.toFixed(1),
@@ -372,91 +288,68 @@
                     projectedAttendance: Math.min(100, projectedAttendance).toFixed(1),
                     willMeetTarget,
                 };
-            }, [quarterDetails, quarterDays, attendance, holidays, vacations]);
+            }, [quarterDays, attendance, holidays, vacations]);
 
 
-            // --- Funciones de manipulación de datos ---
+            // --- Funciones de manipulación de datos (LOCAlSTORAGE) ---
 
             // Manejar el registro de asistencia (Attended, Not_Attended)
-            const updateAttendanceStatus = async (dateStr, status) => {
-                if (!db || !userId) {
-                    setError("Aplicación no inicializada.");
-                    return;
-                }
-                const appId = window.__app_id || 'default-flex-tracker';
-                const docRef = doc(db, `artifacts/${appId}/users/${userId}/attendance`, dateStr);
-                const currentStatus = attendance[dateStr];
+            const updateAttendanceStatus = (dateStr, status) => {
+                setAttendance(prevAttendance => {
+                    const newAttendance = { ...prevAttendance };
+                    const currentStatus = prevAttendance[dateStr];
 
-                // 1. Si el nuevo estado es 'None' o se está intentando desmarcar el estado actual
-                if (status === 'None' || currentStatus === status) {
-                    try {
-                        // Solo eliminamos si existe un registro
-                        if (currentStatus) {
-                            await deleteDoc(docRef);
-                        }
-                    } catch (e) {
-                        console.error("Error deleting attendance:", e);
-                        setError("Error al desmarcar la asistencia.");
+                    if (status === 'None' || currentStatus === status) {
+                        delete newAttendance[dateStr]; // Eliminar el registro
+                    } else {
+                        newAttendance[dateStr] = status; // Establecer nuevo estado
                     }
-                } else {
-                    // 2. Establecer el nuevo estado (Attended o Not_Attended)
-                    try {
-                        await setDoc(docRef, {
-                            date: dateStr,
-                            status: status,
-                            timestamp: Timestamp.now(),
-                        }, { merge: true });
-                    } catch (e) {
-                        console.error("Error setting attendance:", e);
-                        setError("Error al registrar la asistencia.");
-                    }
-                }
+                    return newAttendance;
+                });
+                // La persistencia se maneja en el useEffect
             };
             
             // Guardar feriados o vacaciones
-            const saveConfig = async (key, dates) => {
-                if (!db || !userId) return;
-                const appId = window.__app_id || 'default-flex-tracker';
-                const docRef = doc(db, `artifacts/${appId}/users/${userId}/config`, `Q${quarterDetails.id}-${quarterDetails.startYear}`);
+            const saveConfig = (key, dates) => {
+                const sortedDates = dates
+                    .filter(d => d && d.trim().match(/^\d{4}-\d{2}-\d{2}$/))
+                    .sort();
+                
+                const uniqueSortedDates = [...new Set(sortedDates)];
 
-                try {
-                    // Asegurarse de guardar un array de strings de fechas (YYYY-MM-DD)
-                    const sortedDates = dates
-                        .filter(d => d && d.trim().match(/^\d{4}-\d{2}-\d{2}$/)) // Filtrar y validar formato
-                        .sort();
-                        
-                    await setDoc(docRef, { [key]: [...new Set(sortedDates)] }, { merge: true }); // Usar Set para eliminar duplicados
-                    setError('');
-                } catch (e) {
-                    console.error("Error saving config:", e);
-                    setError(`Error al guardar ${key}.`);
+                if (key === 'holidays') {
+                    setHolidays(uniqueSortedDates);
+                    saveState(HOLIDAYS_KEY, uniqueSortedDates);
+                } else if (key === 'vacations') {
+                    setVacations(uniqueSortedDates);
+                    saveState(VACATIONS_KEY, uniqueSortedDates);
                 }
+                setError('');
             };
 
             // --- Componente de Entrada de Fechas Mejorado ---
             const DateInputList = ({ title, dates, setDates, saveKey }) => {
-                const [newDate, setNewDate] = useState(''); // Estado para la fecha que se está escribiendo
+                const [newDate, setNewDate] = useState('');
                 const currentDates = saveKey === 'holidays' ? holidays : vacations;
 
                 const handleAddDate = () => {
                     if (newDate && !currentDates.includes(newDate)) {
-                        // Agregar la nueva fecha al estado temporal y luego ordenar y guardar
                         const updatedDates = [...currentDates, newDate].sort();
+                        // Actualizar el estado temporal y persistir
                         if (saveKey === 'holidays') setHolidays(updatedDates);
                         if (saveKey === 'vacations') setVacations(updatedDates);
-                        setNewDate(''); // Limpiar la entrada
-                        saveConfig(saveKey, updatedDates); // Guardar inmediatamente
+                        setNewDate(''); 
+                        saveConfig(saveKey, updatedDates);
                     }
                 };
 
                 const handleRemoveDate = (dateToRemove) => {
                     const updatedDates = currentDates.filter(d => d !== dateToRemove);
+                    // Actualizar el estado temporal y persistir
                     if (saveKey === 'holidays') setHolidays(updatedDates);
                     if (saveKey === 'vacations') setVacations(updatedDates);
-                    saveConfig(saveKey, updatedDates); // Guardar inmediatamente
+                    saveConfig(saveKey, updatedDates);
                 };
-                
-                // Removido todayString y la validación para permitir fechas pasadas
 
 
                 return (
@@ -471,7 +364,6 @@
                                 onChange={(e) => setNewDate(e.target.value)}
                                 className="flex-grow p-2 border text-white border-blue-800 rounded-lg focus:ring-orange-500 focus:border-orange-500 text-sm font-mono"
                                 style={{backgroundColor: MIDNIGHT_BLUE}}
-                                // Eliminados min y max para permitir fechas pasadas
                             />
                             <button
                                 onClick={handleAddDate}
@@ -481,8 +373,6 @@
                                 Añadir
                             </button>
                         </div>
-                        {/* Eliminado el mensaje de advertencia sobre fechas pasadas */}
-
 
                         {/* Lista de Fechas Añadidas (Chips) */}
                         <div className="flex flex-wrap gap-2 pt-2 min-h-[40px] border-t border-blue-800">
@@ -509,7 +399,6 @@
 
             if (loading) {
                 return (
-                    // Uso de estilo en línea para Azul Medianoche (#191970)
                     <div className="flex justify-center items-center h-screen" style={{ backgroundColor: MIDNIGHT_BLUE }}>
                         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-orange-500"></div>
                         <p className="ml-4 text-gray-100">Cargando...</p>
@@ -520,22 +409,20 @@
             // Estilo para el indicador de porcentaje
             const getPercentageColor = (percentage) => {
                 const p = parseFloat(percentage);
-                if (p >= 50) return 'text-green-500'; // Mantener verde para "Meta superada"
-                if (p >= 35) return 'text-yellow-400'; // Amarillo/dorado para "Cerca"
-                return 'text-red-500'; // Rojo para "Bajo"
+                if (p >= 50) return 'text-green-500';
+                if (p >= 35) return 'text-yellow-400';
+                return 'text-red-500';
             };
             
             // Lógica para el mensaje de Proyección revisada
             let projectionMessage = null;
-            let projectionStyle = 'text-gray-100'; // Base para usar MIDNIGHT_BLUE_LIGHTER
+            let projectionStyle = 'text-gray-100'; 
 
             if (stats.elapsedWorkingDays > 0) {
-                // Caso 1: Ya cumplió la meta del 50%
                 if (stats.attendedDays >= stats.targetDays) {
                     projectionMessage = '¡Felicidades! Ya superaste la meta del 50% de asistencia. ¡Sigue así!';
                     projectionStyle = 'bg-green-600 text-white shadow-lg';
                 } 
-                // Caso 2: Todavía no cumple la meta, pero puede cumplirla asistiendo al 100% de lo que queda
                 else if (stats.willMeetTarget) {
                     projectionMessage = (
                         <p>
@@ -544,22 +431,18 @@
                     );
                     projectionStyle = 'bg-orange-500 text-white shadow-lg';
                 }
-                // Caso 3: Es imposible alcanzar la meta del 50% aunque asista a todo lo que queda
                 else {
                     projectionMessage = 'Atención: Incluso asistiendo al 100% de lo que queda, no alcanzarás la meta del 50%.';
                     projectionStyle = 'bg-red-600 text-white shadow-lg';
                 }
             } else {
-                // Caso 4: No ha transcurrido ni un día hábil
                 projectionMessage = 'El registro de asistencia comienza hoy. ¡Marca los días que van pasando!';
                 projectionStyle = 'bg-yellow-400 text-blue-950 shadow-lg';
             }
 
 
             return (
-                // Uso de estilo en línea para el fondo principal Azul Medianoche (#191970)
                 <div className="min-h-screen flex flex-col items-center p-4 font-sans" style={{ backgroundColor: MIDNIGHT_BLUE }}>
-                    {/* Contenedor principal con estilo iOS, usando un tono ligeramente diferente para el fondo */}
                     <div className="w-full max-w-md rounded-3xl shadow-2xl p-6 space-y-6 overflow-hidden border-8 border-white/10" style={{backgroundColor: MIDNIGHT_BLUE_DARKER}}>
 
                         {/* Encabezado */}
@@ -575,12 +458,6 @@
                                 Total de días hábiles: <span className="font-semibold">{stats.totalWorkingDays}</span>
                             </p>
                         </header>
-
-                        {error && (
-                            <div className="p-3 bg-red-700 text-white border-l-4 border-red-500 rounded-lg">
-                                {error}
-                            </div>
-                        )}
 
                         {/* Resumen y Métricas */}
                         <div className="grid grid-cols-2 gap-3 p-3 rounded-xl shadow-inner border border-blue-800" style={{backgroundColor: MIDNIGHT_BLUE_LIGHTER}}>
@@ -628,9 +505,9 @@
                             />
                         </div>
 
-                        {/* Pie de página */}
+                        {/* Pie de página con aviso de almacenamiento local */}
                         <footer className="text-center text-xs text-gray-500 pt-4 border-t border-blue-800">
-                            Datos guardados automáticamente en Firebase Firestore.
+                            Datos guardados automáticamente en el **almacenamiento local (localStorage)** de tu iPhone. Si borras los datos de Safari, los perderás.
                         </footer>
                     </div>
                 </div>
@@ -678,7 +555,6 @@
                     acc[monthYear] = {
                         monthName: day.date.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }),
                         days: [],
-                        // Primer día del mes (0=Dom, 1=Lun, etc.)
                         startDayOfWeek: new Date(day.date.getFullYear(), day.date.getMonth(), 1).getDay(),
                     };
                 }
@@ -715,10 +591,7 @@
         const MonthCalendar = ({ monthData, attendance, holidays, vacations, updateAttendanceStatus, MIDNIGHT_BLUE_LIGHTER, MIDNIGHT_BLUE_DARKER, MIDNIGHT_BLUE }) => {
             const daysOfWeek = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 
-            // Determinar cuántos espacios vacíos poner al inicio (offset)
             const initialOffset = monthData.startDayOfWeek;
-
-            // Crear un array de celdas (incluyendo espacios vacíos)
             const calendarCells = Array(initialOffset).fill(null).concat(monthData.days);
 
             return (
@@ -754,17 +627,15 @@
         // Celda individual del calendario
         const CalendarCell = ({ day, attendance, holidays, vacations, updateAttendanceStatus, MIDNIGHT_BLUE_LIGHTER, MIDNIGHT_BLUE_DARKER, MIDNIGHT_BLUE }) => {
             if (!day) {
-                return <div className="h-10"></div>; // Celda vacía para el offset
+                return <div className="h-10"></div>;
             }
 
             const dateStr = day.dateStr;
             const currentStatus = attendance[dateStr] || 'None';
             
-            // Es considerado día hábil si NO es fin de semana y NO es feriado/vacación
             const isWorkingDay = !day.isWeekend && !holidays.includes(dateStr) && !vacations.includes(dateStr);
             const isExcludedDay = !isWorkingDay && (holidays.includes(dateStr) || vacations.includes(dateStr));
             
-            // El único caso deshabilitado es el fin de semana, ya que los días pasados ahora son editables
             const isDisabled = day.isWeekend; 
             
             let cellClasses = "h-10 flex items-center justify-center rounded-lg text-sm font-medium transition duration-150 cursor-pointer p-0.5 relative";
@@ -812,13 +683,11 @@
             const handleCellClick = () => {
                 if (isDisabled) return;
 
-                // Si es un día hábil (no excluido, no fin de semana)
                 if (isWorkingDay) {
                     // Alternar: Attended <-> None
                     const newStatus = currentStatus === 'Attended' ? 'None' : 'Attended';
                     updateAttendanceStatus(dateStr, newStatus);
                 } else if (isExcludedDay && currentStatus !== 'None') {
-                    // Si es un día excluido y ya tiene un estado, permitir desmarcar (ej: un error de registro)
                     updateAttendanceStatus(dateStr, 'None'); 
                 }
             };
@@ -839,7 +708,7 @@
                     className={cellClasses} 
                     title={title}
                     onClick={handleCellClick}
-                    onContextMenu={handleContextMenu} // Click derecho para 'No Asistido'
+                    onContextMenu={handleContextMenu}
                     style={cellStyle}
                 >
                     {/* Mostrar el número del día */}
